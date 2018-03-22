@@ -1,7 +1,16 @@
+import os
 import struct
 
-class PSFType:
+class PSFType(object):
     _serialised = None
+
+    @staticmethod
+    def create(val):
+        if isinstance(val, (str, unicode)):
+            return PSFString(val)
+        elif isinstance(val, int):
+            return PSFInt(val)
+        raise ValueError("Don't know how to convert a {}".format(type(val)))
 
     @property
     def serialised(self):
@@ -30,6 +39,7 @@ class PSFString(PSFType):
         asc = str(self.unicode_)
         return struct.pack(">II", len(asc) + 1, len(self.unicode_) + 1) + asc + "\x00" + self.unicode_.encode('utf-16_be') + "\x00"*2
 
+# ICC file content
 class PSFProfile(PSFType):
     TYPE_STRING = "prof"
 
@@ -38,23 +48,30 @@ class PSFProfile(PSFType):
         self._serialised = None
 
     def serialise(self):
-        return self.data
+        if isinstance(self.data, file):
+            return self.data.read()
+        elif os.path.exists(self.data) and os.path.isfile(self.data):
+            return open(self.data, "rb").read()
+        return data
 
-class PSFProfileDef:
+class PSFFile:
     UNKNOWN_DATA = '\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x07\xe2\x00\x03\x00\x14\x00\x11\x00\n\x00\x03AsPs\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x07'
 
-    def __init__(self, *args):
-        self.properties = [
-            ("{:4.4}".format(str(k)), self.py_to_psf(v)) for k, v in args
-        ]
-
-    @staticmethod
-    def py_to_psf(val):
-        if isinstance(val, (str, unicode)):
-            return PSFString(val)
-        elif isinstance(val, int):
-            return PSFInt(val)
-        return val
+    def __init__(
+        self,
+        profile="",
+        name="Untitled", writer_name="Adobe Photoshop 6.0",
+        intent=1, simulate="papW", kpc=1, proof_type="conv",
+    ):
+        self.properties = (
+            ("name", PSFString(name)),
+            ("wNam", PSFString(writer_name)),
+            ("cInt", PSFInt(intent)),
+            ("dSim", PSFInt(simulate)),
+            ("kpc ", PSFInt(kpc)),
+            ("pTyp", PSFInt(proof_type)),
+            ("pPrf", PSFProfile(profile)),
+        )
 
     def save(self, file_path):
         f = open(file_path, "wb")
@@ -68,6 +85,8 @@ class PSFProfileDef:
         cur_pos = f.tell()
         next_val_pos = cur_pos + len(self.properties) * 12
 
+        fills = []
+
         # write property declarations in order
         for k, v in self.properties:
             f.write(k)
@@ -76,15 +95,18 @@ class PSFProfileDef:
             next_val_pos += val_len
 
             # make it up to factor of 4
-            rmndr = val_len % 4
-            if rmndr:
-                fill = 4 - rmndr
-                f.write("\x00" * fill)
+            fill = 0
+            remainder = val_len % 4
+            if remainder:
+                fill = 4 - remainder
                 next_val_pos += fill
+            fills.append(fill)
 
         # write vals in same order
-        for k, v in self.properties:
+        for i, (k, v) in enumerate(self.properties):
             f.write(v.serialised)
+            if fills[i]:
+                f.write("\x00" * fills[i])
 
         # write size to beginning
         size = f.tell()
